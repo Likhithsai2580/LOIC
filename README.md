@@ -80,3 +80,24 @@ To stop an attack:
 and **be sure to remove "start" from the END of the topic**, if it exists, as well.
 
 Take a look at the source code for more details.
+
+## NEW ATTACK METHODS
+
+LOIC now includes new attack methods incorporating the latest techniques, such as advanced HTTP/2 flooding and DNS amplification.
+
+### HTTP/2 Flooding
+
+HTTP/2 flooding is a more efficient and effective method for performing DDoS attacks. It leverages the features of the HTTP/2 protocol to overwhelm the target server.
+
+### DNS Amplification
+
+DNS amplification is a type of DDoS attack that exploits the functionality of open DNS resolvers to overwhelm a target server with a large amount of traffic.
+
+## HOW TO USE NEW METHODS
+
+To use the new attack methods, you can select them from the method dropdown in the LOIC interface. The available options are:
+
+- HTTP2: For HTTP/2 flooding
+- DNSAmplification: For DNS amplification
+
+You can also control these methods via IRC commands as described above.

