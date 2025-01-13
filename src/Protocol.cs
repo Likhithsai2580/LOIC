@@ -46,5 +46,15 @@ namespace LOIC {
 		/// ICMP Protocol method
 		/// </summary>
 		ICMP = 6,
+
+		/// <summary>
+		/// HTTP/2 Protocol method
+		/// </summary>
+		HTTP2 = 7,
+
+		/// <summary>
+		/// DNS Amplification Protocol method
+		/// </summary>
+		DNSAmplification = 8,
 	}
 }
